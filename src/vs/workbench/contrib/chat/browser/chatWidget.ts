@@ -36,7 +36,7 @@ import { TerminalChatController } from '../../terminal/terminalContribChatExport
 import { ChatAgentLocation, IChatAgentCommand, IChatAgentData, IChatAgentService, IChatWelcomeMessageContent, isChatWelcomeMessageContent } from '../common/chatAgents.js';
 import { CONTEXT_CHAT_INPUT_HAS_AGENT, CONTEXT_CHAT_LOCATION, CONTEXT_CHAT_REQUEST_IN_PROGRESS, CONTEXT_IN_CHAT_SESSION, CONTEXT_IN_QUICK_CHAT, CONTEXT_LAST_ITEM_ID, CONTEXT_RESPONSE_FILTERED } from '../common/chatContextKeys.js';
 import { ChatEditingSessionState, IChatEditingService, IChatEditingSession } from '../common/chatEditingService.js';
-import { IChatModel, IChatResponseModel } from '../common/chatModel.js';
+import { IChatModel, IChatRequestVariableEntry, IChatResponseModel } from '../common/chatModel.js';
 import { ChatRequestAgentPart, IParsedChatRequest, chatAgentLeader, chatSubcommandLeader, formatChatQuestion } from '../common/chatParserTypes.js';
 import { ChatRequestParser } from '../common/chatRequestParser.js';
 import { IChatFollowup, IChatLocationData, IChatSendRequestOptions, IChatService } from '../common/chatService.js';
@@ -978,32 +978,58 @@ export class ChatWidget extends Disposable implements IChatWidget {
 				}
 			}
 
-			const attachedContext = this.inputPart.getAttachedAndImplicitContext();
+			let attachedContext = this.inputPart.getAttachedAndImplicitContext();
 			let workingSet: URI[] | undefined;
 			if (this.location === ChatAgentLocation.EditingSession) {
-				const uniqueWorkingSetEntries = new ResourceSet();
+				const editingSessionAttachedContext: IChatRequestVariableEntry[] = [];
+				let maximumFileEntries = this.chatEditingService.editingSessionFileLimit;
+				const uniqueWorkingSetEntries = new ResourceSet(); // NOTE: this is used for bookkeeping so the UI can avoid rendering references in the UI that are already shown in the working set
 				const currentEditingSession = this.chatEditingService.currentEditingSessionObs.get();
+				// First process anything that is already being edited
+				for (const entry of currentEditingSession?.entries.get() ?? []) {
+					if (maximumFileEntries > 0) {
+						editingSessionAttachedContext.push(this.attachmentModel.asVariableEntry(entry.modifiedURI));
+						uniqueWorkingSetEntries.add(entry.modifiedURI);
+						maximumFileEntries -= 1;
+					}
+				}
+				// Then process anything from attached context
+				for (const attachment of attachedContext) {
+					if (URI.isUri(attachment.value) && maximumFileEntries > 0 && !uniqueWorkingSetEntries.has(attachment.value)) {
+						editingSessionAttachedContext.push(attachment);
+						uniqueWorkingSetEntries.add(attachment.value);
+						maximumFileEntries -= 1;
+					} else if (!URI.isUri(attachment.value)) {
+						// Non-file attachments are not subject to the limit
+						editingSessionAttachedContext.push(attachment);
+					}
+				}
+				// Then look through anything in the working set that isn't already in the attached context
 				if (currentEditingSession?.workingSet) {
 					for (const [file, _] of currentEditingSession?.workingSet) {
-						attachedContext.push(this.attachmentModel.asVariableEntry(file));
-						uniqueWorkingSetEntries.add(file);
+						if (maximumFileEntries > 0 && !uniqueWorkingSetEntries.has(file)) {
+							editingSessionAttachedContext.push(this.attachmentModel.asVariableEntry(file));
+							uniqueWorkingSetEntries.add(file);
+							maximumFileEntries -= 1;
+						}
 					}
 				}
 				// Collect file variables from previous requests before sending the request
 				const previousRequests = this.viewModel.model.getRequests();
 				for (const request of previousRequests) {
 					for (const variable of request.variableData.variables) {
-						if (!URI.isUri(variable.value) || !variable.isFile) {
-							continue;
-						}
-						const uri = variable.value;
-						if (!attachedContext.find((context) => URI.isUri(context.value) && context.value.toString() === uri.toString())) {
-							attachedContext.push(variable);
-							uniqueWorkingSetEntries.add(variable.value);
+						if (URI.isUri(variable.value) && variable.isFile && maximumFileEntries > 0) {
+							const uri = variable.value;
+							if (!uniqueWorkingSetEntries.has(uri)) {
+								editingSessionAttachedContext.push(variable);
+								uniqueWorkingSetEntries.add(variable.value);
+								maximumFileEntries -= 1;
+							}
 						}
 					}
 				}
 				workingSet = [...uniqueWorkingSetEntries.values()];
+				attachedContext = editingSessionAttachedContext;
 			}
 
 			const result = await this.chatService.sendRequest(this.viewModel.sessionId, input, {

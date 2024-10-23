@@ -69,7 +69,7 @@ import { AccessibilityCommandId } from '../../accessibility/common/accessibility
 import { getSimpleCodeEditorWidgetOptions, getSimpleEditorOptions, setupSimpleEditorSelectionStyling } from '../../codeEditor/browser/simpleEditorOptions.js';
 import { ChatAgentLocation, IChatAgentService } from '../common/chatAgents.js';
 import { CONTEXT_CHAT_HAS_FILE_ATTACHMENTS, CONTEXT_CHAT_INPUT_CURSOR_AT_TOP, CONTEXT_CHAT_INPUT_HAS_FOCUS, CONTEXT_CHAT_INPUT_HAS_TEXT, CONTEXT_IN_CHAT_INPUT } from '../common/chatContextKeys.js';
-import { ChatEditingSessionState, IChatEditingSession, WorkingSetEntryState } from '../common/chatEditingService.js';
+import { ChatEditingSessionState, IChatEditingService, IChatEditingSession, WorkingSetEntryState } from '../common/chatEditingService.js';
 import { IChatRequestVariableEntry } from '../common/chatModel.js';
 import { IChatFollowup } from '../common/chatService.js';
 import { IChatResponseViewModel } from '../common/chatViewModel.js';
@@ -243,6 +243,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		@ICommandService private readonly commandService: ICommandService,
 		@IEditorService private readonly editorService: IEditorService,
 		@IOpenerService private readonly openerService: IOpenerService,
+		@IChatEditingService private readonly chatEditingService: IChatEditingService,
 	) {
 		super();
 
@@ -909,7 +910,7 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		// Summary of number of files changed
 		const innerContainer = this.chatEditingSessionWidgetContainer.querySelector('.chat-editing-session-container.show-file-icons') as HTMLElement ?? dom.append(this.chatEditingSessionWidgetContainer, $('.chat-editing-session-container.show-file-icons'));
 		const modifiedFiles = new ResourceSet();
-		const entries: IChatCollapsibleListItem[] = chatEditingSession?.entries.get().map((entry) => {
+		let entries: IChatCollapsibleListItem[] = chatEditingSession?.entries.get().map((entry) => {
 			modifiedFiles.add(entry.modifiedURI);
 			return {
 				reference: entry.modifiedURI,
@@ -949,9 +950,13 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 		if (entries.length !== this._chatEditList?.object.length) {
 			const overviewText = overviewRegion.querySelector('span') ?? dom.append(overviewRegion, $('span'));
 			overviewText.textContent = localize('chatEditingSession.workingSet', 'Working Set');
+			const maximumFileEntries = this.chatEditingService.editingSessionFileLimit;
 
 			if (entries.length === 1) {
 				overviewText.textContent += ' ' + localize('chatEditingSession.oneFile', '(1 file)');
+			} else if (entries.length >= maximumFileEntries) {
+				overviewText.textContent += ' ' + localize('chatEditingSession.fileLimitHit', '({0} file limit reached)', maximumFileEntries);
+				entries = entries.slice(0, maximumFileEntries);
 			} else if (entries.length > 1) {
 				overviewText.textContent += ' ' + localize('chatEditingSession.manyFiles', '({0} files)', entries.length);
 			}
